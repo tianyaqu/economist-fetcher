@@ -2,38 +2,72 @@
 
 import requests
 from bs4 import BeautifulSoup
-import asyncio
+import asyncio,aiohttp
+from io import open as iopen
 
-
-async def fetch(url):
-    proxies = {
-        'http': 'http://127.0.0.1:8087',
-    }
+async def fetch_async(url):
+    proxies = 'http://127.0.0.1:8087'
 
     headers = {
         'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/54.0.2840.98 Safari/537.36',
         'Referer':'http://www.economist.com/printedition/2017-02-18'
     }
 
-    r = requests.get(url, headers=headers,proxies=proxies)
-    return r.text
+    isText = True
+    parts = url.split('.')
+    if len(parts) > 0 :
+        suffix = parts[-1].lower()
+        if suffix == 'jpg' or suffix == 'png' or suffix == 'jpeg':
+            isText = False
 
+    data = None
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url,proxy=proxies,headers=headers) as resp:
+            if resp.status != 200:
+                print('response not 200',url)
+            else:
+                if isText:
+                    data = await resp.text()
+                else :
+                    data = await resp.read()
+    return data
+
+async def save(url):
+    print('fetch and save',url)
+    data =  await fetch_async(url)
+    if not data :
+        print('err fetch ',url,' no data')
+        return
+    name = url.split('/')[-1]
+    #print(name,' ',len(r))
+    with iopen(name, 'wb') as fw:
+        fw.write(r)
 
 async def parseArticle(url):
-    text = await fetch(url)
-    soup = BeautifulSoup(text,'html5lib')
-    headline = soup.article.h1.text
+    request = await fetch_async(url)
+    soup = BeautifulSoup(request,'html5lib')
+    try:
+        headline = soup.article.h1.text
+    except:
+        return
     print('------------------')
     print('title ',headline)
-    for content in soup.article.select('.main-content'):
-        print (content)
+
+    imgBaseUrl = 'http://economist-archive.com'
+    imgUrls = []
+    for img in soup.article.find_all('img'):
+        url = img['src']
+        imgUrls.append(url)
+        img['src'] = imgBaseUrl + '/' + url.split('/')[-1]
+
+    await asyncio.gather(*[save(url) for url in imgUrls])
 
 async def parseEdition(url):
-    text = await fetch(url)
+    request = await fetch_async(url)
     baseUrl = 'http://www.economist.com'
     suffix = "/print"
     urls = []
-    soup = BeautifulSoup(text,'html5lib')
+    soup = BeautifulSoup(request,'html5lib')
     for item in soup.body.select('.main-content .list__item'):
         for child in item.children:
             if child['class']:
@@ -41,7 +75,6 @@ async def parseEdition(url):
                 if sectionName == 'list__title':
                     print('sec ',child.text)
                 else:
-                    #print child['href'],child.text
                     urls.append(baseUrl + child['href'] + suffix)
         print('---') 
 
@@ -49,15 +82,16 @@ async def parseEdition(url):
 
 async def fetchEdition(rootUrl):
     u = await parseEdition(rootUrl)
-    tasks = [asyncio.ensure_future(parseArticle(url)) for url in u]
-    for task in tasks:
-        if task.done() == True:
-            task.cancel()
+    return u
+
+async def parseAnEdition(rootUrl):
+    urls = await fetchEdition(rootUrl)
+    await asyncio.gather(*[parseArticle(url) for url in urls])
 
 def run():
     rootUrl = 'http://www.economist.com/printedition/2017-02-18'
     loop = asyncio.get_event_loop()
-    loop.run_until_complete(fetchEdition(rootUrl))
+    loop.run_until_complete(parseAnEdition(rootUrl))
 
 if __name__ == '__main__':
     run()
